@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/banner.svg" alt="Marina — a harbor for all your servers" width="760">
+  <img src="https://github.com/Yue2u/marina/blob/main/banner.svg" alt="Marina — a harbor for all your servers" width="760">
 </p>
 
 <p align="center">
