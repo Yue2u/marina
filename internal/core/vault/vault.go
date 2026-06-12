@@ -45,15 +45,26 @@ type Vault struct {
 }
 
 // Unlock загружает vault из файла, запрашивая мастер-пароль.
+// Если задана переменная MARINA_VAULT_PASSWORD — использует её без промпта.
 // Если файл не существует — создаёт пустой vault.
 func Unlock(path string) (*Vault, error) {
-	fmt.Fprint(os.Stderr, "Master password: ")
-	password, err := term.ReadPassword(int(os.Stdin.Fd()))
-	fmt.Fprintln(os.Stderr)
-	if err != nil {
-		return nil, err
+	var password []byte
+	if pw := os.Getenv("MARINA_VAULT_PASSWORD"); pw != "" {
+		password = []byte(pw)
+	} else {
+		fmt.Fprint(os.Stderr, "Master password: ")
+		var err error
+		password, err = term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Fprintln(os.Stderr)
+		if err != nil {
+			return nil, err
+		}
 	}
+	return UnlockWithPassword(path, password)
+}
 
+// UnlockWithPassword открывает vault с явным паролем (для программного использования).
+func UnlockWithPassword(path string, password []byte) (*Vault, error) {
 	v := &Vault{path: path, password: password, secrets: map[string][]byte{}}
 
 	data, err := os.ReadFile(path)
