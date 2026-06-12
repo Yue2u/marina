@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -30,6 +31,7 @@ type hostForm struct {
 	authIdx int                        // index into authCycle
 	secret  textinput.Model            // key path or password
 	focused int                        // 0..fieldCount()-1
+	editID  string                     // пустой = новый хост, иначе — редактируем существующий
 }
 
 type hostSavedMsg struct{ host core.Host }
@@ -158,6 +160,33 @@ func (f *hostForm) refreshSecret() {
 	}
 }
 
+// newHostFormEdit создаёт форму предзаполненную данными существующего хоста.
+func newHostFormEdit(h core.Host) hostForm {
+	f := newHostForm()
+	f.editID = h.ID
+	f.inputs[fldName].SetValue(h.Label)
+	f.inputs[fldHostname].SetValue(h.Hostname)
+	f.inputs[fldUser].SetValue(h.Username)
+	if h.Port > 0 {
+		f.inputs[fldPort].SetValue(fmt.Sprintf("%d", h.Port))
+	}
+	for i, a := range authCycle {
+		if a == h.Auth {
+			f.authIdx = i
+			break
+		}
+	}
+	// Для ключа показываем путь; для пароля — оставляем пустым (re-enter or keep)
+	if h.Auth == core.AuthKey {
+		f.secret.SetValue(h.SecretRef)
+		f.secret.EchoMode = textinput.EchoNormal
+	} else if h.Auth == core.AuthPassword {
+		f.secret.Placeholder = "(пусто = оставить прежний пароль)"
+		f.secret.EchoMode = textinput.EchoPassword
+	}
+	return f
+}
+
 // ── Submit ───────────────────────────────────────────────────────────────────
 
 func (f hostForm) submit() tea.Cmd {
@@ -182,8 +211,12 @@ func (f hostForm) submit() tea.Cmd {
 	}
 
 	auth := f.selectedAuth()
+	id := f.editID
+	if id == "" {
+		id = uuid.New().String()
+	}
 	h := core.Host{
-		ID:        uuid.New().String(),
+		ID:        id,
 		Label:     name,
 		Hostname:  hostname,
 		Port:      port,
@@ -197,7 +230,10 @@ func (f hostForm) submit() tea.Cmd {
 		if auth == core.AuthKey && sec == "" {
 			sec = "~/.ssh/id_ed25519"
 		}
-		h.SecretRef = sec
+		// При редактировании пустое поле пароля = "не менять"
+		if sec != "" || auth != core.AuthPassword {
+			h.SecretRef = sec
+		}
 	}
 
 	return func() tea.Msg { return hostSavedMsg{h} }
@@ -221,7 +257,11 @@ var inputLabels = [numInputs]string{
 
 func (f hostForm) View() string {
 	var sb strings.Builder
-	sb.WriteString(styleFormFocused.Render("Add host") + "\n\n")
+	title := "Add host"
+	if f.editID != "" {
+		title = "Edit host"
+	}
+	sb.WriteString(styleFormFocused.Render(title) + "\n\n")
 
 	// Static text inputs
 	for i := 0; i < numInputs; i++ {

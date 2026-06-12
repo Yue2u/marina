@@ -1,8 +1,8 @@
 package cli
 
 import (
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/Yue2u/marina/internal/tui"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func launchTUI() error {

@@ -18,6 +18,7 @@ func Root() *cobra.Command {
 		mvCmd(),
 		folderCmd(),
 		importCmd(),
+		receiveCmd(),
 		syncCmd(),
 		serveCmd(),
 		mcpCmd(),

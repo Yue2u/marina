@@ -155,6 +155,28 @@ func scanHost(rows *sql.Rows) (core.Host, error) {
 	return h, nil
 }
 
+// HostsAll возвращает все хосты включая tombstones (DeletedAt != nil) — для синхронизации.
+func (s *SQLiteStore) HostsAll(ctx context.Context) ([]core.Host, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, folder_id, label, hostname, port, username, auth,
+          identity_id, secret_ref, jump_host_id, options, tags, updated_at, deleted_at
+          FROM hosts`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var hosts []core.Host
+	for rows.Next() {
+		h, err := scanHost(rows)
+		if err != nil {
+			return nil, err
+		}
+		hosts = append(hosts, h)
+	}
+	return hosts, rows.Err()
+}
+
 // --- Folders ---
 
 func (s *SQLiteStore) SaveFolder(ctx context.Context, f core.Folder) error {

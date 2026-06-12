@@ -21,9 +21,12 @@ const (
 	focusTree focusMode = iota
 	focusSearch
 	focusForm
+	focusFolder
+	focusShare
 )
 
-// Messages
+// ── Messages ──────────────────────────────────────────────────────────────────
+
 type dataLoadedMsg struct {
 	folders []core.Folder
 	hosts   []core.Host
@@ -31,20 +34,24 @@ type dataLoadedMsg struct {
 type errMsg struct{ err error }
 type sessionEndedMsg struct{ err error }
 
+// ── Model ─────────────────────────────────────────────────────────────────────
+
 type model struct {
-	st       *store.SQLiteStore
-	folders  []core.Folder
-	hosts    []core.Host
-	nodes    []treeNode
-	expanded map[string]bool
-	cursor   int
-	width    int
-	height   int
-	err      error
-	status   string
-	focus    focusMode
-	search   textinput.Model
-	form     hostForm
+	st         *store.SQLiteStore
+	folders    []core.Folder
+	hosts      []core.Host
+	nodes      []treeNode
+	expanded   map[string]bool
+	cursor     int
+	width      int
+	height     int
+	err        error
+	status     string
+	focus      focusMode
+	search     textinput.Model
+	form       hostForm
+	folderForm folderForm
+	shareCode  string // показывается в focusShare
 }
 
 func New(st *store.SQLiteStore) model {
@@ -59,9 +66,7 @@ func New(st *store.SQLiteStore) model {
 	}
 }
 
-func (m model) Init() tea.Cmd {
-	return loadData(m.st)
-}
+func (m model) Init() tea.Cmd { return loadData(m.st) }
 
 func loadData(st *store.SQLiteStore) tea.Cmd {
 	return func() tea.Msg {
@@ -78,8 +83,9 @@ func loadData(st *store.SQLiteStore) tea.Cmd {
 	}
 }
 
+// ── Update ────────────────────────────────────────────────────────────────────
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// Global messages handled regardless of focus
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -113,6 +119,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case formCancelledMsg:
 		m.focus = focusTree
 		return m, nil
+
+	case folderSavedMsg:
+		ctx := context.Background()
+		if err := m.st.SaveFolder(ctx, msg.folder); err != nil {
+			m.status = "folder save error: " + err.Error()
+		}
+		m.focus = focusTree
+		return m, loadData(m.st)
+
+	case folderCancelledMsg:
+		m.focus = focusTree
+		return m, nil
 	}
 
 	switch m.focus {
@@ -120,6 +138,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateSearch(msg)
 	case focusForm:
 		return m.updateForm(msg)
+	case focusFolder:
+		return m.updateFolderForm(msg)
+	case focusShare:
+		return m.updateShare(msg)
 	default:
 		return m.updateTree(msg)
 	}
@@ -133,6 +155,7 @@ func (m model) updateTree(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch key.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
+
 	case "j", "down":
 		if m.cursor < len(m.nodes)-1 {
 			m.cursor++
@@ -141,25 +164,58 @@ func (m model) updateTree(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.cursor > 0 {
 			m.cursor--
 		}
+
 	case " ":
 		if len(m.nodes) > 0 && m.nodes[m.cursor].kind == kindFolder {
 			id := m.nodes[m.cursor].id
 			m.expanded[id] = !m.expanded[id]
 			m.rebuildNodes()
 		}
+
 	case "enter":
 		if len(m.nodes) > 0 && m.nodes[m.cursor].kind == kindHost {
 			return m, m.doConnect(m.nodes[m.cursor].id)
 		}
+		if len(m.nodes) > 0 && m.nodes[m.cursor].kind == kindFolder {
+			id := m.nodes[m.cursor].id
+			m.expanded[id] = !m.expanded[id]
+			m.rebuildNodes()
+		}
+
 	case "/":
 		m.focus = focusSearch
 		m.search.SetValue("")
 		m.search.Focus()
 		return m, textinput.Blink
+
 	case "a":
 		m.focus = focusForm
 		m.form = newHostForm()
 		return m, textinput.Blink
+
+	case "e":
+		if len(m.nodes) > 0 && m.nodes[m.cursor].kind == kindHost {
+			if h, ok := m.findHost(m.nodes[m.cursor].id); ok {
+				m.focus = focusForm
+				m.form = newHostFormEdit(h)
+				return m, textinput.Blink
+			}
+		}
+
+	case "f":
+		parentID := m.currentFolderID()
+		m.focus = focusFolder
+		m.folderForm = newFolderForm(parentID)
+		return m, textinput.Blink
+
+	case "s":
+		if len(m.nodes) > 0 && m.nodes[m.cursor].kind == kindHost {
+			if h, ok := m.findHost(m.nodes[m.cursor].id); ok {
+				m.shareCode = core.EncodeShare(h)
+				m.focus = focusShare
+			}
+		}
+
 	case "d":
 		if len(m.nodes) > 0 && m.nodes[m.cursor].kind == kindHost {
 			ctx := context.Background()
@@ -180,7 +236,6 @@ func (m model) updateSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.rebuildNodes()
 			return m, nil
 		case "enter":
-			// connect to first result if any
 			if len(m.nodes) > 0 && m.nodes[0].kind == kindHost {
 				m.focus = focusTree
 				m.search.Blur()
@@ -189,7 +244,6 @@ func (m model) updateSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
-
 	var cmd tea.Cmd
 	m.search, cmd = m.search.Update(msg)
 	m.rebuildNodes()
@@ -201,6 +255,23 @@ func (m model) updateForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.form, cmd = m.form.Update(msg)
 	return m, cmd
 }
+
+func (m model) updateFolderForm(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.folderForm, cmd = m.folderForm.Update(msg)
+	return m, cmd
+}
+
+func (m model) updateShare(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// любая клавиша закрывает оверлей
+	if _, ok := msg.(tea.KeyMsg); ok {
+		m.focus = focusTree
+		m.shareCode = ""
+	}
+	return m, nil
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 func (m *model) rebuildNodes() {
 	if m.focus == focusSearch && m.search.Value() != "" {
@@ -225,6 +296,31 @@ func (m model) filteredNodes(query string) []treeNode {
 	return nodes
 }
 
+func (m model) findHost(id string) (core.Host, bool) {
+	for _, h := range m.hosts {
+		if h.ID == id {
+			return h, true
+		}
+	}
+	return core.Host{}, false
+}
+
+// currentFolderID возвращает ID папки под курсором (или родителя хоста), nil = корень.
+func (m model) currentFolderID() *string {
+	if len(m.nodes) == 0 {
+		return nil
+	}
+	n := m.nodes[m.cursor]
+	if n.kind == kindFolder {
+		return &n.id
+	}
+	// хост — берём его FolderID
+	if h, ok := m.findHost(n.id); ok {
+		return h.FolderID
+	}
+	return nil
+}
+
 func (m model) doConnect(hostID string) tea.Cmd {
 	c := exec.Command(os.Args[0], "connect", hostID)
 	return tea.ExecProcess(c, func(err error) tea.Msg {
@@ -232,7 +328,7 @@ func (m model) doConnect(hostID string) tea.Cmd {
 	})
 }
 
-// --- Styles ---
+// ── View ──────────────────────────────────────────────────────────────────────
 
 var (
 	styleSelected = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
@@ -241,6 +337,8 @@ var (
 	styleDim      = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	styleBox      = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
 	styleStatus   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	styleShareBox = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(1, 2).
+			BorderForeground(lipgloss.Color("10"))
 )
 
 func (m model) View() string {
@@ -248,8 +346,14 @@ func (m model) View() string {
 		return "Error: " + m.err.Error() + "\n\nPress q to quit."
 	}
 
-	if m.focus == focusForm {
+	// модальные оверлеи
+	switch m.focus {
+	case focusForm:
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.form.View())
+	case focusFolder:
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.folderForm.View())
+	case focusShare:
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.shareView())
 	}
 
 	treeW := m.width / 2
@@ -269,10 +373,21 @@ func (m model) View() string {
 	} else if m.status != "" {
 		bottomBar = styleStatus.Render(m.status)
 	} else {
-		bottomBar = styleStatus.Render("j/k move   space fold   / search   a add   d del   ↵ connect   q quit")
+		bottomBar = styleStatus.Render(
+			"j/k move   space/↵ fold   / search   a add   e edit   f folder   s share   d del   ↵ connect   q quit",
+		)
 	}
 
 	return body + "\n" + bottomBar
+}
+
+func (m model) shareView() string {
+	var sb strings.Builder
+	sb.WriteString(styleFormFocused.Render("Share host") + "\n\n")
+	sb.WriteString(styleFormLabel.Render("Отправь этот код получателю:\n\n"))
+	sb.WriteString(styleAuthActive.Render(m.shareCode) + "\n\n")
+	sb.WriteString(styleFormLabel.Render("Получатель: marina receive <код>\n\nНажми любую клавишу чтобы закрыть"))
+	return styleShareBox.Render(sb.String())
 }
 
 func (m model) renderTree(visible int) string {
@@ -320,15 +435,21 @@ func (m model) renderDetail() string {
 	}
 	n := m.nodes[m.cursor]
 	if n.kind == kindFolder {
-		return styleFolder.Render("[folder]") + "\n" + n.label
+		// считаем хосты в папке
+		count := 0
+		for _, h := range m.hosts {
+			if h.FolderID != nil && *h.FolderID == n.id {
+				count++
+			}
+		}
+		return styleFolder.Render("📁 "+n.label) + "\n" +
+			styleDim.Render(fmt.Sprintf("%d host(s)", count)) + "\n\n" +
+			styleDim.Render("space/↵ fold   f new subfolder")
 	}
 
-	var h core.Host
-	for _, host := range m.hosts {
-		if host.ID == n.id {
-			h = host
-			break
-		}
+	h, ok := m.findHost(n.id)
+	if !ok {
+		return ""
 	}
 
 	lines := []string{
@@ -336,9 +457,12 @@ func (m model) renderDetail() string {
 		fmt.Sprintf("user   %s", h.Username),
 		fmt.Sprintf("auth   %s", h.Auth),
 	}
+	if h.Auth == core.AuthKey && h.SecretRef != "" {
+		lines = append(lines, fmt.Sprintf("key    %s", h.SecretRef))
+	}
 	if len(h.Tags) > 0 {
 		lines = append(lines, fmt.Sprintf("tags   %s", strings.Join(h.Tags, ", ")))
 	}
-	lines = append(lines, "", styleDim.Render("↵ connect"))
+	lines = append(lines, "", styleDim.Render("↵ connect   e edit   s share   d delete"))
 	return strings.Join(lines, "\n")
 }
