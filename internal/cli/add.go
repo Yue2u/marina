@@ -15,7 +15,6 @@ import (
 
 func addCmd() *cobra.Command {
 	var (
-		label    string
 		hostname string
 		username string
 		port     int
@@ -27,8 +26,9 @@ func addCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "add",
+		Use:   "add <name>",
 		Short: "Add a new host",
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
@@ -41,7 +41,7 @@ func addCmd() *cobra.Command {
 			id := uuid.New().String()
 			h := core.Host{
 				ID:        id,
-				Label:     label,
+				Label:     args[0],
 				Hostname:  hostname,
 				Port:      port,
 				Username:  username,
@@ -132,7 +132,6 @@ func addCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVarP(&label, "label", "l", "", "Display name (required)")
 	cmd.Flags().StringVarP(&hostname, "host", "H", "", "Hostname or IP (required)")
 	cmd.Flags().StringVarP(&username, "user", "u", "", "SSH username (required)")
 	cmd.Flags().IntVarP(&port, "port", "p", 22, "SSH port")
@@ -142,7 +141,6 @@ func addCmd() *cobra.Command {
 	cmd.Flags().StringVar(&jump, "jump", "", "Jump host label or id")
 	cmd.Flags().StringArrayVar(&tags, "tag", nil, "Tag (repeatable)")
 
-	cmd.MarkFlagRequired("label")
 	cmd.MarkFlagRequired("host")
 	cmd.MarkFlagRequired("user")
 

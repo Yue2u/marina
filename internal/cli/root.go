@@ -7,6 +7,17 @@ func Root() *cobra.Command {
 		Use:   "marina",
 		Short: "Dock to any server",
 	}
-	root.AddCommand(connectCmd(), lsCmd(), addCmd(), rmCmd())
+	root.AddCommand(
+		connectCmd(),
+		lsCmd(),
+		addCmd(),
+		rmCmd(),
+		mvCmd(),
+		folderCmd(),
+		importCmd(),
+		syncCmd(),
+		serveCmd(),
+		mcpCmd(),
+	)
 	return root
 }

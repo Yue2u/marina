@@ -12,11 +12,11 @@ import (
 )
 
 func configDir() (string, error) {
-	home, err := os.UserHomeDir()
+	base, err := os.UserConfigDir()
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(home, ".marina")
+	dir := filepath.Join(base, "marina")
 	return dir, os.MkdirAll(dir, 0700)
 }
 
@@ -25,7 +25,7 @@ func openStore() (*store.SQLiteStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config dir: %w", err)
 	}
-	return store.OpenSQLite(filepath.Join(dir, "marina.db"))
+	return store.OpenSQLite(filepath.Join(dir, "db.sqlite"))
 }
 
 func openVault() (*vault.Vault, error) {
