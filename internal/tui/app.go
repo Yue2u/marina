@@ -7,11 +7,20 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Yue2u/marina/internal/core"
 	"github.com/Yue2u/marina/internal/core/store"
+)
+
+type focusMode int
+
+const (
+	focusTree focusMode = iota
+	focusSearch
+	focusForm
 )
 
 // Messages
@@ -33,12 +42,20 @@ type model struct {
 	height   int
 	err      error
 	status   string
+	focus    focusMode
+	search   textinput.Model
+	form     hostForm
 }
 
 func New(st *store.SQLiteStore) model {
+	search := textinput.New()
+	search.Placeholder = "search..."
+	search.Prompt = "/ "
+
 	return model{
 		st:       st,
 		expanded: map[string]bool{},
+		search:   search,
 	}
 }
 
@@ -62,20 +79,21 @@ func loadData(st *store.SQLiteStore) tea.Cmd {
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Global messages handled regardless of focus
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		return m, nil
 
 	case dataLoadedMsg:
 		m.folders = msg.folders
 		m.hosts = msg.hosts
-		m.nodes = buildTree(m.folders, m.hosts, nil, 0, m.expanded)
-		if m.cursor >= len(m.nodes) {
-			m.cursor = max(0, len(m.nodes)-1)
-		}
+		m.rebuildNodes()
+		return m, nil
 
 	case errMsg:
 		m.err = msg.err
+		return m, nil
 
 	case sessionEndedMsg:
 		m.status = ""
@@ -84,31 +102,127 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, loadData(m.st)
 
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "q", "ctrl+c":
-			return m, tea.Quit
-		case "j", "down":
-			if m.cursor < len(m.nodes)-1 {
-				m.cursor++
-			}
-		case "k", "up":
-			if m.cursor > 0 {
-				m.cursor--
-			}
-		case " ":
-			if len(m.nodes) > 0 && m.nodes[m.cursor].kind == kindFolder {
-				id := m.nodes[m.cursor].id
-				m.expanded[id] = !m.expanded[id]
-				m.nodes = buildTree(m.folders, m.hosts, nil, 0, m.expanded)
-			}
-		case "enter":
-			if len(m.nodes) > 0 && m.nodes[m.cursor].kind == kindHost {
-				return m, m.doConnect(m.nodes[m.cursor].id)
-			}
+	case hostSavedMsg:
+		ctx := context.Background()
+		if err := m.st.SaveHost(ctx, msg.host); err != nil {
+			m.status = "save error: " + err.Error()
+		}
+		m.focus = focusTree
+		return m, loadData(m.st)
+
+	case formCancelledMsg:
+		m.focus = focusTree
+		return m, nil
+	}
+
+	switch m.focus {
+	case focusSearch:
+		return m.updateSearch(msg)
+	case focusForm:
+		return m.updateForm(msg)
+	default:
+		return m.updateTree(msg)
+	}
+}
+
+func (m model) updateTree(msg tea.Msg) (tea.Model, tea.Cmd) {
+	key, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil
+	}
+	switch key.String() {
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	case "j", "down":
+		if m.cursor < len(m.nodes)-1 {
+			m.cursor++
+		}
+	case "k", "up":
+		if m.cursor > 0 {
+			m.cursor--
+		}
+	case " ":
+		if len(m.nodes) > 0 && m.nodes[m.cursor].kind == kindFolder {
+			id := m.nodes[m.cursor].id
+			m.expanded[id] = !m.expanded[id]
+			m.rebuildNodes()
+		}
+	case "enter":
+		if len(m.nodes) > 0 && m.nodes[m.cursor].kind == kindHost {
+			return m, m.doConnect(m.nodes[m.cursor].id)
+		}
+	case "/":
+		m.focus = focusSearch
+		m.search.SetValue("")
+		m.search.Focus()
+		return m, textinput.Blink
+	case "a":
+		m.focus = focusForm
+		m.form = newHostForm()
+		return m, textinput.Blink
+	case "d":
+		if len(m.nodes) > 0 && m.nodes[m.cursor].kind == kindHost {
+			ctx := context.Background()
+			m.st.DeleteHost(ctx, m.nodes[m.cursor].id)
+			return m, loadData(m.st)
 		}
 	}
 	return m, nil
+}
+
+func (m model) updateSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
+	key, ok := msg.(tea.KeyMsg)
+	if ok {
+		switch key.String() {
+		case "esc":
+			m.focus = focusTree
+			m.search.Blur()
+			m.rebuildNodes()
+			return m, nil
+		case "enter":
+			// connect to first result if any
+			if len(m.nodes) > 0 && m.nodes[0].kind == kindHost {
+				m.focus = focusTree
+				m.search.Blur()
+				return m, m.doConnect(m.nodes[0].id)
+			}
+			return m, nil
+		}
+	}
+
+	var cmd tea.Cmd
+	m.search, cmd = m.search.Update(msg)
+	m.rebuildNodes()
+	return m, cmd
+}
+
+func (m model) updateForm(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.form, cmd = m.form.Update(msg)
+	return m, cmd
+}
+
+func (m *model) rebuildNodes() {
+	if m.focus == focusSearch && m.search.Value() != "" {
+		m.nodes = m.filteredNodes(m.search.Value())
+	} else {
+		m.nodes = buildTree(m.folders, m.hosts, nil, 0, m.expanded)
+	}
+	if m.cursor >= len(m.nodes) {
+		m.cursor = max(0, len(m.nodes)-1)
+	}
+}
+
+func (m model) filteredNodes(query string) []treeNode {
+	q := strings.ToLower(query)
+	var nodes []treeNode
+	for _, h := range m.hosts {
+		if strings.Contains(strings.ToLower(h.Label), q) ||
+			strings.Contains(strings.ToLower(h.Hostname), q) {
+			nodes = append(nodes, treeNode{kindHost, h.ID, h.Label, 0})
+		}
+	}
+	return nodes
 }
 
 func (m model) doConnect(hostID string) tea.Cmd {
@@ -134,29 +248,36 @@ func (m model) View() string {
 		return "Error: " + m.err.Error() + "\n\nPress q to quit."
 	}
 
+	if m.focus == focusForm {
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.form.View())
+	}
+
 	treeW := m.width / 2
 	if treeW < 28 {
 		treeW = 28
 	}
-	detailW := m.width - treeW - 6 // account for two borders + padding
-
+	detailW := m.width - treeW - 6
 	panelH := m.height - 3
 
 	left := styleBox.Width(treeW).Height(panelH).Render(m.renderTree(panelH - 2))
 	right := styleBox.Width(detailW).Height(panelH).Render(m.renderDetail())
-
 	body := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 
-	status := m.status
-	if status == "" {
-		status = "j/k move   space fold   ↵ connect   q quit"
+	var bottomBar string
+	if m.focus == focusSearch {
+		bottomBar = m.search.View()
+	} else if m.status != "" {
+		bottomBar = styleStatus.Render(m.status)
+	} else {
+		bottomBar = styleStatus.Render("j/k move   space fold   / search   a add   d del   ↵ connect   q quit")
 	}
-	return body + "\n" + styleStatus.Render(status)
+
+	return body + "\n" + bottomBar
 }
 
 func (m model) renderTree(visible int) string {
 	if len(m.nodes) == 0 {
-		return styleDim.Render("(empty — use 'marina add')")
+		return styleDim.Render("(empty — press 'a' to add a host)")
 	}
 
 	start := 0
