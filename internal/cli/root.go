@@ -6,6 +6,9 @@ func Root() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "marina",
 		Short: "Dock to any server",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return launchTUI()
+		},
 	}
 	root.AddCommand(
 		connectCmd(),
